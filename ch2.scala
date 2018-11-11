@@ -1,17 +1,31 @@
 package scala_spark
 
 import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.functions._
+import org.apache.spark.SparkConf
+import org.apache.spark.SparkContext
+import org.apache.spark.sql.expressions.Window
+import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.{ DataFrame, Dataset, Row, SparkSession }
 
-object ch2 {
+case class MatchData(
+  id_1: Int,
+  id_2: Int,
+  cmp_fname_c1: Option[Double],
+  cmp_fname_c2: Option[Double],
+  cmp_lname_c1: Option[Double],
+  cmp_lname_c2: Option[Double],
+  cmp_sex: Option[Int],
+  cmp_bd: Option[Int],
+  cmp_bm: Option[Int],
+  cmp_by: Option[Int],
+  cmp_plz: Option[Int],
+  is_match: Boolean)
+
+object ch2 extends Serializable {
   // 데이터셋에 대한 데이터프레임을 생성하기 위해서 사용하는 객체
-  import org.apache.spark.sql.SparkSession
-  import org.apache.spark.sql.functions._
-  import org.apache.spark.SparkConf
-  import org.apache.spark.SparkContext
-  import org.apache.spark.sql.expressions.Window
-  import org.apache.spark.sql.DataFrame
-  
-  
+
   /*
   Both map and reduce have as input the array and a function you define.
   They are in some way complementary: map cannot return one single element for an array of multiple elements,
@@ -19,18 +33,18 @@ object ch2 {
   */
 
   def main(args: Array[String]) {
-   
-    
-    val conf = new SparkConf().setMaster("local[*]").setAppName("aa");
-    val sc = new SparkContext(conf)
+    val spark = SparkSession.builder().master("local[*]").appName("aa").getOrCreate();
+    import spark.implicits._
+    //val conf = new SparkConf().setMaster("local[*]").setAppName("aa");
+    //val sc = new SparkContext(conf)
     //val ssc = new SQLContext(sc)
     //import ssc.implicits._
 
-    val rdd = sc.parallelize(Array(1, 2, 2, 4), 4)
+    //val rdd = sc.parallelize(Array(1, 2, 2, 4), 4)
     //print(rdd.first())
 
-    val rawblocks = sc.textFile("C:/Users/MinhoLee/eclipse-workspace/spark_ex/linkage/*")
-    val head = rawblocks.take(10)
+    //val rawblocks = sc.textFile("C:/Users/MinhoLee/eclipse-workspace/spark_ex/linkage/*")
+    //val head = rawblocks.take(10)
     //head.foreach(println)
 
     def isHeader(line: String): Boolean = {
@@ -38,11 +52,11 @@ object ch2 {
     }
 
     //spark Session
-    val spark = SparkSession.builder().master("local[*]").appName("aa").config("some-config", "some-value").getOrCreate();
+    
     //head.filterNot(isHeader).foreach(println)
     //head.filter(x => !isHeader(x)).foreach(println)
-    import spark.implicits._
-    
+   
+
     // inferSchema : 데이터 타입 변
     val prev = spark.read.csv("linkage/*")
     val parsed = spark.read.option("header", "true").option("nullValue", "?").option("inferSchema", "true").csv("linkage/*")
@@ -105,8 +119,7 @@ object ch2 {
       pivot("metric", Seq("count", "mean", "stddev", "min", "max")).
       agg(first("value"))
     //wideDF.select("field","count","mean").show()
-    
-      
+
     // pivotSummart function
     def pivotSummary(desc: DataFrame): DataFrame = {
       val schema = desc.schema
@@ -124,36 +137,45 @@ object ch2 {
         agg(first("value"))
 
     }
-    
+
     val matchSummaryT = pivotSummary(matchSummary)
     val missSummaryT = pivotSummary(missSummary)
-    
+
     matchSummaryT.createOrReplaceTempView("match_desc")
     missSummaryT.createOrReplaceTempView("miss_desc")
     
+    /*
     spark.sql("""
     SELECT a.field, a.count + b.count as total, a.mean - b.mean as delta
     FROM match_desc a INNER JOIN miss_desc b ON a.field = b.field 
     WHERE a.field NOT IN ("id_1", "id_2")
     ORDER BY delta DESC, total DESC
     """).show()
+		*/
+
+    val matchData = parsed.as[MatchData]
+    matchData.show()
+
+    case class Score(value: Double) {
+      def +(oi: Option[Int]) = {
+        Score(value + oi.getOrElse(0))
+      }
+    }
+
+    def scoreMatchData(md: MatchData): Double = {
+      (Score(md.cmp_lname_c1.getOrElse(0.0)) + md.cmp_plz + md.cmp_by + md.cmp_bd + md.cmp_bm).value
+    }
+
     
-    case class MatchData(
-      id_1: Int,
-      id_2: Int,
-      cmp_fname_c1: Option[Double],
-      cmp_fname_c2: Option[Double],
-      cmp_lname_c1: Option[Double],
-      cmp_lname_c2: Option[Double],
-      cmp_sex: Option[Int],
-      cmp_bd: Option[Int],
-      cmp_bm: Option[Int],
-      cmp_by: Option[Int],
-      cmp_plz: Option[Int],
-      is_match: Boolean
-    )
+    val scored = matchData.map {
+       md => (scoreMatchData(md), md.is_match)
+    }.toDF("score","is_match")
+  	
     
-    //val matchData = parsed.as[MatchData]
-    //matchData.show()
-  }    
+    def crossTabs(scored: DataFrame, t: Double) : DataFrame = {
+       scored.selectExpr(s"score >= $t as above", "is_match").groupBy("above").pivot("is_match", Seq("true","false")).count()
+    }
+    
+    crossTabs(scored, 4.0).show()
+  }
 }
