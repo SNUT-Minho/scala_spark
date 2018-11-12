@@ -61,13 +61,58 @@ object RunRecommender extends Serializable {
   
     def buildCounts(
       rawUserArtistData: Dataset[String],
-      bArtistAlias: Broadcast[Map[Int, Int]]): DataFrame = {
+      bArtistAlias: Broadcast[scala.collection.immutable.Map[Int, Int]]): DataFrame = {
       rawUserArtistData.map { line =>
         val Array(userID, artistID, count) = line.split(' ').map(_.toInt)
         val finalArtistID = bArtistAlias.value.getOrElse(artistID, artistID)
         (userID, finalArtistID, count)
       }.toDF("user", "artist", "count")
     }
+    
+    val trainData = buildCounts(rawUserArtistData, bArtistAlias).cache()
+    
+    import org.apache.spark.ml.recommendation._
+    import scala.util.Random
+    
+    // 무작위 초기값을 적용한 ALS 객체
+    val model = new ALS().
+                setSeed(Random.nextLong()).
+                setImplicitPrefs(true).
+                setRank(10).
+                setRegParam(0.01).
+                setAlpha(1.0).
+                setMaxIter(5).
+                setUserCol("user").
+                setItemCol("artist").
+                setRatingCol("count").
+                setPredictionCol("prediction").  
+                fit(trainData)
+    
+   
+    trainData.unpersist()            
+    model.userFactors.show(1, truncate = false)
+    
+    val userID = 2093760
+    
+    val existingArtistIDs = trainData.filter($"user" === userID).select("artist").as[Int].collect()
+    
+    artistByID.filter($"id" isin (existingArtistIDs:_*)).show()
+    
+    def makeRecommendations(model: ALSModel, userID: Int, howMany: Int): DataFrame = {
+      val toRecommend = model.itemFactors.
+      select($"id".as("artist")).
+      withColumn("user", lit(userID))
+      
+      model.transform(toRecommend).
+      select("artist","prediction").
+      orderBy($"prediction".desc).
+      limit(howMany)
+      
+    }
+    
+    val topRecommendations = makeRecommendations(model, userID, 5)
+    topRecommendations.show()
+    
   }
   
   
